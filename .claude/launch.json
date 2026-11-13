@@ -1,6 +1,7 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "colorpang-dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev", "--", "--port", "5173", "--host"], "port": 5173 }
+    { "name": "colorpang-dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev", "--", "--port", "5173", "--host"], "port": 5173 },
+    { "name": "colorpang-server", "runtimeExecutable": "node", "runtimeArgs": ["server.cjs"], "port": 8080 }
   ]
 }
