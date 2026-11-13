@@ -60,7 +60,7 @@ export interface RoomApi {
   clearError(): void;
 }
 
-const JOIN_TIMEOUT_MS = 5_000;
+const JOIN_TIMEOUT_MS = 6_000;
 const rng = () => Math.random();
 
 export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
@@ -280,7 +280,9 @@ export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
           lastHello.current = now;
           send({ type: 'HELLO', clientId: myId });
         }
-        if (now - joinedAt.current > JOIN_TIMEOUT_MS) setError('방을 찾을 수 없어요. 코드를 확인해 주세요');
+        // 공용 중계소 연결에 몇 초 걸릴 수 있으므로, 연결된 뒤부터 기다린 시간으로 판단
+        if (onlineRef.current && now - Math.max(stableSince.current, joinedAt.current) > JOIN_TIMEOUT_MS)
+          setError('방을 찾을 수 없어요. 코드를 확인해 주세요');
         return;
       }
       lastSeen.current[myId] = { seat: seatOf(l, myId), at: now, isHost: l.hostId === myId };
