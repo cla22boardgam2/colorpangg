@@ -34,20 +34,29 @@ function eventText(ev: GameEvent | null, nameOf: (seat: number) => string): stri
   }
 }
 
-function useWindowWidth() {
-  const [w, setW] = useState(window.innerWidth);
+/** 실제로 보이는 화면 크기 (태블릿 브라우저의 주소창·도구막대를 뺀 영역) */
+function useViewport() {
+  const read = () => ({
+    w: window.visualViewport?.width ?? window.innerWidth,
+    h: window.visualViewport?.height ?? window.innerHeight,
+  });
+  const [size, setSize] = useState(read);
   useEffect(() => {
-    const on = () => setW(window.innerWidth);
+    const on = () => setSize(read());
     window.addEventListener('resize', on);
-    return () => window.removeEventListener('resize', on);
+    window.visualViewport?.addEventListener('resize', on);
+    return () => {
+      window.removeEventListener('resize', on);
+      window.visualViewport?.removeEventListener('resize', on);
+    };
   }, []);
-  return w;
+  return size;
 }
 
 export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameState; onExit: () => void }) {
   const [wildCard, setWildCard] = useState<Card | null>(null);
   const [confirmExit, setConfirmExit] = useState(false);
-  const width = useWindowWidth();
+  const { w: width, h: height } = useViewport();
   const remaining = useRemaining(game.turnStartedAt);
 
   const meIdx = game.players.findIndex((p) => p.clientId === room.myId);
@@ -104,9 +113,12 @@ export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameSt
   };
 
   // 손패 겹치기: 화면 폭에 맞춰 간격 계산
-  const cardSize = width >= 1000 ? 'lg' : 'md';
+  // 화면 높이에 맞춰 카드 크기 결정 (낮은 화면에서 손패가 잘리지 않게)
+  const cardSize = height >= 860 && width >= 1000 ? 'lg' : height >= 560 ? 'md' : 'sm';
+  const tableSize = height >= 760 ? 'lg' : height >= 520 ? 'md' : 'sm';
+  const compact = height < 760;
   const cw = CARD_WIDTH[cardSize];
-  const avail = Math.min(width, 1400) - 220;
+  const avail = Math.min(width, 1400) - (width < 820 ? 40 : 220);
   const step = hand.length > 1 ? Math.min(cw + 8, (avail - cw) / (hand.length - 1)) : cw;
   const overlap = step - cw;
 
@@ -114,7 +126,7 @@ export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameSt
   const pendingOne = game.oneCardPending;
 
   return (
-    <div className={`game${myTurn ? ' game--myturn' : ''}`}>
+    <div className={`game${myTurn ? ' game--myturn' : ''}${compact ? ' game--compact' : ''}`}>
       <div className="topbar">
         <button className="btn btn--ghost btn--sm" onClick={() => setConfirmExit(true)}>
           ← 나가기
@@ -156,7 +168,7 @@ export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameSt
           disabled={!myTurn || game.drawnCardId !== null}
           aria-label="카드 뽑기"
         >
-          <CardBack size="lg" />
+          <CardBack size={tableSize} />
           <span className="pile__label">
             {myTurn && game.drawnCardId === null ? (game.pendingDraw > 0 ? `${game.pendingDraw}장 받기` : '1장 뽑기') : `${game.drawPile.length}장`}
           </span>
@@ -164,7 +176,7 @@ export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameSt
 
         <div className="discard">
           <div key={top.id + game.discard.length} className="discard__top">
-            <CardView card={top} size="lg" />
+            <CardView card={top} size={tableSize} />
           </div>
         </div>
 
