@@ -3,7 +3,19 @@ import { applyAction, startGame } from '../game/rules';
 import type { Action, GameState } from '../game/types';
 import type { LobbyState, NetMessage } from './protocol';
 import { CLIENT_ID, RealtimeChannel } from './realtime';
-import { acceptSnapshot, claimSeat as claimSeatPure, electHost, HEARTBEAT_MS, HOST_TIMEOUT_MS, leaveSeat as leaveSeatPure, rebaseTurnStart, seatOf } from './room';
+import {
+  canElect,
+  claimSeat as claimSeatPure,
+  electHost,
+  HEARTBEAT_MS,
+  HOST_TIMEOUT_MS,
+  leaveSeat as leaveSeatPure,
+  lobbyIsNewer,
+  rebaseTurnStart,
+  seatOf,
+  snapshotIsNewer,
+  type Seen,
+} from './room';
 
 export const SESSION_KEY = 'colorpang_session';
 export interface SavedSession {
@@ -63,7 +75,13 @@ export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
   const lobbyRef = useRef<LobbyState | null>(null);
   const gameRef = useRef<GameState | null>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
-  const lastSeen = useRef<Record<string, { seat: number | null; at: number }>>({});
+  const lastSeen = useRef<Record<string, Seen>>({});
+  /** 내가 가진 판의 (기수, 버전) */
+  const snapMeta = useRef<{ term: number; version: number } | null>(null);
+  /** 연결·화면이 안정된 시각. 이 뒤로 6초가 지나야 심판 이어받기 가능 */
+  const stableSince = useRef(Date.now());
+  const onlineRef = useRef(false);
+  const lastTick = useRef(Date.now());
   const joinedAt = useRef(Date.now());
   const lastHello = useRef(0);
 
@@ -71,8 +89,9 @@ export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
     lobbyRef.current = l;
     setLobbyState(l);
   };
-  const setGame = (g: GameState | null) => {
+  const setGame = (g: GameState | null, term?: number) => {
     gameRef.current = g;
+    snapMeta.current = g ? { term: term ?? lobbyRef.current?.term ?? 1, version: g.version } : null;
     setGameState(g);
   };
   const send = (m: NetMessage) => channelRef.current?.publish(m);
@@ -82,7 +101,7 @@ export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
     if (lobbyRef.current) send({ type: 'LOBBY', lobby: lobbyRef.current });
   };
   const broadcastGame = () => {
-    if (gameRef.current) send({ type: 'SNAPSHOT', hostId: myId, state: gameRef.current, sentAt: Date.now() });
+    if (gameRef.current) send({ type: 'SNAPSHOT', hostId: myId, term: lobbyRef.current?.term ?? 1, state: gameRef.current, sentAt: Date.now() });
   };
 
   /** 심판: 행동 요청 처리 (자기 것 포함) */
@@ -130,24 +149,36 @@ export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
     const now = Date.now();
     switch (m.type) {
       case 'HEARTBEAT': {
-        lastSeen.current[m.clientId] = { seat: m.seat, at: now };
+        lastSeen.current[m.clientId] = { seat: m.seat, at: now, isHost: m.isHost };
         // 심판보다 판이 뒤처져 있으면 다시 요청
-        if (m.isHost && !amHost() && m.version > (gameRef.current?.version ?? 0)) send({ type: 'HELLO', clientId: myId });
+        if (
+          m.isHost &&
+          !amHost() &&
+          m.clientId === lobbyRef.current?.hostId &&
+          m.version > 0 &&
+          snapshotIsNewer(snapMeta.current, { term: m.term, version: m.version })
+        )
+          send({ type: 'HELLO', clientId: myId });
         return;
       }
       case 'LOBBY': {
         const cur = lobbyRef.current;
-        if (cur && m.lobby.version <= cur.version) return;
-        lastSeen.current[m.lobby.hostId] = { seat: seatOf(m.lobby, m.lobby.hostId), at: now };
+        if (!lobbyIsNewer(cur, m.lobby)) return;
+        const wasHost = cur?.hostId === myId;
+        lastSeen.current[m.lobby.hostId] = { seat: seatOf(m.lobby, m.lobby.hostId), at: now, isHost: true };
         setLobby(m.lobby);
+        // 다른 심판에게 자리를 넘겼으면 최신 판을 받아 옴
+        if (wasHost && m.lobby.hostId !== myId) send({ type: 'HELLO', clientId: myId });
         setError((e) => (e === '방을 찾을 수 없어요. 코드를 확인해 주세요' ? null : e));
         return;
       }
       case 'SNAPSHOT': {
-        if (!acceptSnapshot(gameRef.current, m.state)) return;
+        // 지금 심판이 보낸 것만, (기수, 버전)이 더 새로울 때만 받음
+        if (m.hostId === myId || m.hostId !== lobbyRef.current?.hostId) return;
+        if (!snapshotIsNewer(snapMeta.current, { term: m.term, version: m.state.version })) return;
         const prev = lastSeen.current[m.hostId];
-        lastSeen.current[m.hostId] = { seat: prev?.seat ?? null, at: now };
-        setGame(rebaseTurnStart(m.state, m.sentAt, now));
+        lastSeen.current[m.hostId] = { seat: prev?.seat ?? null, at: now, isHost: true };
+        setGame(rebaseTurnStart(m.state, m.sentAt, now), m.term);
         return;
       }
       case 'REJECT': {
@@ -193,13 +224,15 @@ export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
     joinedAt.current = Date.now();
     lastSeen.current = {};
     setGame(null);
-    if (mode === 'create') setLobby({ version: 1, hostId: myId, seats: {}, started: false });
+    if (mode === 'create') setLobby({ version: 1, term: 1, hostId: myId, seats: {}, started: false });
     else setLobby(null);
 
     const ch = new RealtimeChannel(roomCode, myId);
     channelRef.current = ch;
     const offMsg = ch.subscribe((m) => onMessageRef.current(m));
     const offStatus = ch.onStatus((on, p) => {
+      if (on !== onlineRef.current) stableSince.current = Date.now();
+      onlineRef.current = on;
       setOnline(on);
       setProvider(p);
     });
@@ -221,15 +254,26 @@ export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
         clientId: myId,
         seat: l ? seatOf(l, myId) : null,
         isHost: amHost(),
+        term: l?.term ?? 0,
         version: gameRef.current?.version ?? 0,
         sentAt: Date.now(),
       });
+      // 심판은 로비를 계속 알려서, 심판이 둘이 되면 규칙대로 한쪽이 물러나게 함
+      if (amHost()) broadcastLobby();
     };
     beat();
     const hb = setInterval(beat, HEARTBEAT_MS);
 
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') stableSince.current = Date.now();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     const tick = setInterval(() => {
       const now = Date.now();
+      // 잠자기 등으로 타이머가 한동안 멈췄다면 깨어난 것으로 보고 다시 기다림
+      if (now - lastTick.current > 2000) stableSince.current = now;
+      lastTick.current = now;
       const l = lobbyRef.current;
       if (!l) {
         if (now - lastHello.current >= 1500) {
@@ -239,7 +283,7 @@ export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
         if (now - joinedAt.current > JOIN_TIMEOUT_MS) setError('방을 찾을 수 없어요. 코드를 확인해 주세요');
         return;
       }
-      lastSeen.current[myId] = { seat: seatOf(l, myId), at: now };
+      lastSeen.current[myId] = { seat: seatOf(l, myId), at: now, isHost: l.hostId === myId };
 
       // 접속 상태 표시
       const status: Record<number, boolean> = {};
@@ -250,10 +294,11 @@ export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
       setPeersOnline((prev) => (JSON.stringify(prev) === JSON.stringify(status) ? prev : status));
 
       // 심판 이어받기 (들어온 지 6초가 지난 뒤부터)
-      if (now - joinedAt.current > HOST_TIMEOUT_MS && l.hostId !== myId) {
+      const stable = Math.max(stableSince.current, joinedAt.current);
+      if (onlineRef.current && canElect(now, stable) && l.hostId !== myId) {
         if (electHost(lastSeen.current, l.hostId, now) === myId) {
-          setLobby({ ...l, hostId: myId, version: l.version + 1 });
-          if (gameRef.current) setGame({ ...gameRef.current, version: gameRef.current.version + 1 });
+          setLobby({ ...l, hostId: myId, term: l.term + 1, version: l.version + 1 });
+          if (gameRef.current) setGame(gameRef.current, l.term + 1);
           broadcastLobby();
           broadcastGame();
         }
@@ -271,6 +316,7 @@ export function useRoom(roomCode: string, mode: 'create' | 'join'): RoomApi {
     return () => {
       clearInterval(hb);
       clearInterval(tick);
+      document.removeEventListener('visibilitychange', onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomCode, mode, myId]);

@@ -2,9 +2,20 @@ import { describe, expect, test } from 'vitest';
 import { makeRng } from '../game/deck';
 import { startGame } from '../game/rules';
 import type { LobbyState } from './protocol';
-import { acceptSnapshot, claimSeat, electHost, HOST_TIMEOUT_MS, newRoomCode, rebaseTurnStart, seatOf } from './room';
+import {
+  canElect,
+  claimSeat,
+  createIdFactory,
+  electHost,
+  HOST_TIMEOUT_MS,
+  lobbyIsNewer,
+  newRoomCode,
+  rebaseTurnStart,
+  seatOf,
+  snapshotIsNewer,
+} from './room';
 
-const lobby = (seats: LobbyState['seats'] = {}, started = false): LobbyState => ({ version: 1, hostId: 'h', seats, started });
+const lobby = (seats: LobbyState['seats'] = {}, started = false): LobbyState => ({ version: 1, term: 1, hostId: 'h', seats, started });
 const game = (version: number) => ({
   ...startGame([{ seat: 1, name: 'a', clientId: 'a' }, { seat: 2, name: 'b', clientId: 'b' }], makeRng(1), 500),
   version,
@@ -58,41 +69,90 @@ describe('claimSeat', () => {
 describe('electHost', () => {
   const now = 100_000;
   test('electHost keeps live host', () => {
-    const seen = { h: { seat: 3, at: now - 1000 }, a: { seat: 1, at: now } };
+    const seen = { h: { seat: 3, at: now - 1000, isHost: true }, a: { seat: 1, at: now, isHost: false } };
     expect(electHost(seen, 'h', now)).toBe('h');
   });
 
   test('electHost picks lowest live seat after 6s', () => {
     const seen = {
-      h: { seat: 1, at: now - HOST_TIMEOUT_MS - 1 },
-      b: { seat: 4, at: now },
-      a: { seat: 2, at: now - 100 },
-      x: { seat: null, at: now },
+      h: { seat: 1, at: now - HOST_TIMEOUT_MS - 1, isHost: true },
+      b: { seat: 4, at: now, isHost: false },
+      a: { seat: 2, at: now - 100, isHost: false },
+      x: { seat: null, at: now, isHost: false },
     };
     expect(electHost(seen, 'h', now)).toBe('a');
   });
 
   test('electHost ignores stale peers', () => {
     const seen = {
-      h: { seat: 1, at: now - 7000 },
-      a: { seat: 2, at: now - 9000 },
-      b: { seat: 3, at: now - 10 },
+      h: { seat: 1, at: now - 7000, isHost: true },
+      a: { seat: 2, at: now - 9000, isHost: false },
+      b: { seat: 3, at: now - 10, isHost: false },
     };
     expect(electHost(seen, 'h', now)).toBe('b');
   });
 
-  test('electHost falls back to seatless peers by id', () => {
-    const seen = { h: { seat: null, at: now - 9000 }, y: { seat: null, at: now }, x: { seat: null, at: now } };
-    expect(electHost(seen, 'h', now)).toBe('x');
+  test('seatless peers never take over', () => {
+    const seen = { h: { seat: 1, at: now - 9000, isHost: true }, x: { seat: null, at: now, isHost: false } };
+    expect(electHost(seen, 'h', now)).toBe('h');
+  });
+
+  test('host that reloaded and no longer claims host is replaced', () => {
+    const seen = { h: { seat: 1, at: now, isHost: false }, a: { seat: 2, at: now, isHost: false } };
+    expect(electHost(seen, 'h', now)).toBe('a');
+  });
+});
+
+describe('election guard', () => {
+  test('canElect only after being stable for 6s', () => {
+    expect(canElect(10_000, 10_000 - HOST_TIMEOUT_MS)).toBe(false);
+    expect(canElect(10_000, 10_000 - HOST_TIMEOUT_MS - 1)).toBe(true);
+  });
+});
+
+describe('message ids', () => {
+  test('a new channel for the same client never reuses ids', () => {
+    const first = createIdFactory('c1');
+    const second = createIdFactory('c1');
+    const a = [first(), first(), first()];
+    const b = [second(), second(), second()];
+    expect(new Set([...a, ...b]).size).toBe(6);
+  });
+});
+
+describe('lobby ordering', () => {
+  const base: LobbyState = {
+    version: 5,
+    term: 2,
+    hostId: 'a',
+    started: true,
+    seats: { 1: { name: 'A', clientId: 'a' }, 2: { name: 'B', clientId: 'b' }, 3: { name: 'C', clientId: 'c' } },
+  };
+  test('higher term wins even with lower version', () => {
+    expect(lobbyIsNewer(base, { ...base, term: 3, version: 1, hostId: 'b' })).toBe(true);
+    expect(lobbyIsNewer(base, { ...base, term: 1, version: 99, hostId: 'b' })).toBe(false);
+  });
+  test('same host: higher version wins', () => {
+    expect(lobbyIsNewer(base, { ...base, version: 6 })).toBe(true);
+    expect(lobbyIsNewer(base, { ...base, version: 5 })).toBe(false);
+    expect(lobbyIsNewer(null, base)).toBe(true);
+  });
+  test('two hosts in the same term: lower seat host wins on both sides', () => {
+    const fromB = { ...base, hostId: 'b', version: 9 };
+    const fromC = { ...base, hostId: 'c', version: 2 };
+    expect(lobbyIsNewer(fromC, fromB)).toBe(true);
+    expect(lobbyIsNewer(fromB, fromC)).toBe(false);
   });
 });
 
 describe('snapshots', () => {
-  test('acceptSnapshot ignores stale versions', () => {
-    expect(acceptSnapshot(null, game(1))).toBe(true);
-    expect(acceptSnapshot(game(5), game(6))).toBe(true);
-    expect(acceptSnapshot(game(5), game(5))).toBe(false);
-    expect(acceptSnapshot(game(5), game(4))).toBe(false);
+  test('snapshotIsNewer orders by term then version', () => {
+    expect(snapshotIsNewer(null, { term: 1, version: 1 })).toBe(true);
+    expect(snapshotIsNewer({ term: 1, version: 5 }, { term: 1, version: 6 })).toBe(true);
+    expect(snapshotIsNewer({ term: 1, version: 5 }, { term: 1, version: 5 })).toBe(false);
+    expect(snapshotIsNewer({ term: 1, version: 5 }, { term: 1, version: 4 })).toBe(false);
+    expect(snapshotIsNewer({ term: 1, version: 50 }, { term: 2, version: 3 })).toBe(true);
+    expect(snapshotIsNewer({ term: 2, version: 3 }, { term: 1, version: 50 })).toBe(false);
   });
 
   test('rebaseTurnStart keeps remaining time', () => {

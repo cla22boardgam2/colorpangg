@@ -1,5 +1,6 @@
 import mqtt from 'mqtt';
 import type { NetMessage } from './protocol';
+import { createIdFactory } from './room';
 
 /**
  * 실시간 통신 채널 (13개의 증거 RealtimeChannel 이식)
@@ -89,13 +90,14 @@ export class RealtimeChannel {
   private isDestroyed = false;
   private queue: Wrapped[] = [];
   private activeProvider = '연결 중...';
-  private seq = 0;
+  private nextId: () => string;
   private seen = new Set<string>();
   private seenOrder: string[] = [];
 
   constructor(roomId: string, clientId: string = CLIENT_ID) {
     this.roomId = roomId;
     this.clientId = clientId;
+    this.nextId = createIdFactory(clientId);
     if (!new URLSearchParams(window.location.search).has('nobc')) this.initBroadcastChannel();
     const relay = relayUrl();
     if (relay) this.initCustomWebSocket(relay);
@@ -179,11 +181,23 @@ export class RealtimeChannel {
         reconnectPeriod: 4000,
       });
       this.mqttClient = client;
+      // 학교 방화벽이 연결을 조용히 막으면 error가 오지 않을 수 있어서, 8초 안에 한 번도 연결되지 않으면 다음 중계소로 전환
+      let everConnected = false;
+      let switched = false;
+      const switchBroker = () => {
+        if (switched || everConnected || this.isDestroyed) return;
+        switched = true;
+        client.end(true);
+        setTimeout(() => this.initMqtt(brokerIdx + 1), 500);
+      };
+      const fallbackTimer = setTimeout(switchBroker, 8000);
       client.on('connect', () => {
         if (this.isDestroyed) {
           client.end(true);
           return;
         }
+        everConnected = true;
+        clearTimeout(fallbackTimer);
         client.subscribe(this.topic, { qos: 1 }, (err) => {
           if (err) return;
           this.isConnected = true;
@@ -199,10 +213,8 @@ export class RealtimeChannel {
         }
       });
       client.on('error', () => {
-        if (!this.isConnected && !this.isDestroyed && brokerIdx === 0) {
-          client.end(true);
-          setTimeout(() => this.initMqtt(1), 1000);
-        }
+        clearTimeout(fallbackTimer);
+        switchBroker();
       });
       client.on('close', () => {
         if (!this.isConnected) return;
@@ -242,7 +254,7 @@ export class RealtimeChannel {
   }
 
   publish(message: NetMessage) {
-    const wrapped: Wrapped = { ...message, _sender: this.clientId, _id: `${this.clientId}:${++this.seq}` };
+    const wrapped: Wrapped = { ...message, _sender: this.clientId, _id: this.nextId() };
     if (this.bc) {
       try {
         this.bc.postMessage(wrapped);

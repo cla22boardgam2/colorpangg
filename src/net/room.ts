@@ -42,27 +42,57 @@ export function leaveSeat(lobby: LobbyState, clientId: string): LobbyState {
   return { ...lobby, seats, version: lobby.version + 1 };
 }
 
-/** 현재 심판이 살아 있으면 유지, 아니면 살아 있는 사람 중 자리 번호가 가장 빠른 사람 (자리 없는 사람은 뒤, 동률은 id 순) */
-export function electHost(
-  lastSeen: Record<string, { seat: number | null; at: number }>,
-  currentHostId: string,
-  now: number,
-): string {
+export interface Seen {
+  seat: number | null;
+  at: number;
+  isHost: boolean;
+}
+
+/**
+ * 현재 심판이 '심판이라고 말하며' 6초 안에 보였으면 유지.
+ * 아니면 (물러난 심판을 빼고) 6초 안에 보인 사람 중 자리가 있는 사람 가운데 자리 번호가 가장 빠른 사람.
+ * 자리 없는 사람(관전·입장 중)은 심판이 되지 않음.
+ */
+export function electHost(lastSeen: Record<string, Seen>, currentHostId: string, now: number): string {
   const alive = (id: string) => lastSeen[id] !== undefined && now - lastSeen[id].at <= HOST_TIMEOUT_MS;
-  if (alive(currentHostId)) return currentHostId;
+  if (alive(currentHostId) && lastSeen[currentHostId].isHost) return currentHostId;
   const candidates = Object.keys(lastSeen)
-    .filter(alive)
-    .sort((a, b) => {
-      const sa = lastSeen[a].seat ?? Infinity;
-      const sb = lastSeen[b].seat ?? Infinity;
-      if (sa !== sb) return sa - sb;
-      return a < b ? -1 : a > b ? 1 : 0;
-    });
+    .filter((id) => id !== currentHostId && alive(id) && lastSeen[id].seat !== null)
+    .sort((a, b) => lastSeen[a].seat! - lastSeen[b].seat! || (a < b ? -1 : a > b ? 1 : 0));
   return candidates[0] ?? currentHostId;
 }
 
-export function acceptSnapshot(current: GameState | null, incoming: GameState): boolean {
-  return current === null || incoming.version > current.version;
+/** 연결이 안정된 지(접속·재연결·화면 깨어남 이후) 6초가 지나야 심판 이어받기를 시도 */
+export function canElect(now: number, stableSince: number): boolean {
+  return now - stableSince > HOST_TIMEOUT_MS;
+}
+
+/** 채널마다 다른 nonce를 붙여, 같은 clientId로 다시 들어와도 메시지 id가 겹치지 않게 함 */
+export function createIdFactory(clientId: string, nonce: string = Math.random().toString(36).slice(2, 10)): () => string {
+  let seq = 0;
+  return () => `${clientId}:${nonce}:${++seq}`;
+}
+
+/** (term, version) 순. 같은 기수에 심판이 둘이면 자리 번호가 빠른 심판 쪽이 이김 */
+export function lobbyIsNewer(current: LobbyState | null, incoming: LobbyState): boolean {
+  if (!current) return true;
+  if (incoming.term !== current.term) return incoming.term > current.term;
+  if (incoming.hostId !== current.hostId) {
+    const si = seatOf(incoming, incoming.hostId) ?? Infinity;
+    const sc = seatOf(current, current.hostId) ?? Infinity;
+    if (si !== sc) return si < sc;
+    return incoming.hostId < current.hostId;
+  }
+  return incoming.version > current.version;
+}
+
+export function snapshotIsNewer(
+  current: { term: number; version: number } | null,
+  incoming: { term: number; version: number },
+): boolean {
+  if (!current) return true;
+  if (incoming.term !== current.term) return incoming.term > current.term;
+  return incoming.version > current.version;
 }
 
 /** 심판 기기 시각 기준 turnStartedAt을 받은 기기 시각으로 옮김 */
