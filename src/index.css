@@ -1,3 +1,22 @@
-:root { font-family: 'Noto Sans KR', system-ui, sans-serif; }
-body { margin: 0; background: #1b1440; color: #fff; }
+:root {
+  font-family: 'Noto Sans KR', system-ui, sans-serif;
+  --c-red: #e8453c;
+  --c-yellow: #f5b82e;
+  --c-green: #2fb36d;
+  --c-blue: #3a7be0;
+  --ink: #1b1440;
+  --bg: #1b1440;
+  --panel: #2a2550;
+  --accent: #ffd34d;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: #fff; -webkit-tap-highlight-color: transparent; }
 .title { font-family: 'Jua', sans-serif; }
+
+.card { display: block; flex: none; filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.35)); transition: transform 0.15s ease; }
+.card--clickable { cursor: pointer; }
+.card--playable { transform: translateY(-14px); filter: drop-shadow(0 0 8px var(--accent)) drop-shadow(0 3px 4px rgba(0, 0, 0, 0.35)); }
+.card--dimmed { opacity: 0.55; }
+
+.gallery { padding: 16px 24px 48px; }
+.gallery__row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; align-items: flex-end; }
