@@ -238,3 +238,15 @@ code { background: rgba(255,255,255,.1); padding: 1px 6px; border-radius: 6px; f
   .lobby__code strong { font-size: 48px; }
   .seat { min-height: 100px; padding: 14px 10px; }
 }
+
+/* ---------- [한 장!] 버튼: 네 모서리 중 한 곳에 떠 있음 ---------- */
+.myarea { position: relative; }
+.one-call { position: absolute; z-index: 30; font-size: 24px; padding: 12px 22px; white-space: nowrap; }
+/* 위쪽: 상단 바(나가기·연결 상태) 바로 아래 */
+.game .topbar { position: relative; }
+.one-call--tl { top: calc(100% + 6px); left: 14px; }
+.one-call--tr { top: calc(100% + 6px); right: 14px; }
+/* 아래쪽: 내 손패 영역 바로 위 */
+.one-call--bl { bottom: calc(100% + 6px); left: 14px; }
+.one-call--br { bottom: calc(100% + 6px); right: 14px; }
+.game--compact .one-call { font-size: 20px; padding: 10px 18px; }

@@ -7,6 +7,7 @@ import { CARD_WIDTH, COLOR_HEX, COLOR_NAME, CardView, ColorShape, describeCard }
 import { ColorPicker } from './ColorPicker';
 import { ConnectionBadge } from './ConnectionBadge';
 import { TurnTimer, useRemaining } from './TurnTimer';
+import { pickCorner, type Corner } from './oneCall';
 
 const KIND_ORDER = { number: 0, skip: 1, reverse: 2, draw2: 3, wild: 4, wild4: 5 } as const;
 function sortHand(hand: Card[]): Card[] {
@@ -124,6 +125,22 @@ export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameSt
 
   const toast = eventText(game.lastEvent, nameOf);
   const pendingOne = game.oneCardPending;
+  const iMustCall = me !== null && pendingOne === me.seat;
+
+  // [한 장!] 버튼은 나타날 때마다 네 모서리 중 한 곳에 무작위로
+  const [corner, setCorner] = useState<Corner>('br');
+  useEffect(() => {
+    if (iMustCall) setCorner(pickCorner());
+  }, [iMustCall]);
+  const oneCallButton = (where: 'top' | 'bottom') =>
+    iMustCall && me && corner[0] === (where === 'top' ? 't' : 'b') ? (
+      <button
+        className={`btn btn--one one-call one-call--${corner}`}
+        onClick={() => room.act({ type: 'callOne', seat: me.seat })}
+      >
+        📣 한 장!
+      </button>
+    ) : null;
 
   return (
     <div className={`game${myTurn ? ' game--myturn' : ''}${compact ? ' game--compact' : ''}`}>
@@ -133,6 +150,7 @@ export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameSt
         </button>
         <span className="topbar__room">방 {room.roomCode}</span>
         <ConnectionBadge online={room.online} provider={room.provider} />
+        {oneCallButton('top')}
       </div>
 
       <div className="opponents">
@@ -212,6 +230,7 @@ export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameSt
 
       {me ? (
         <div className="myarea">
+          {oneCallButton('bottom')}
           <div className="hand" style={{ paddingLeft: Math.max(0, -overlap / 2) }}>
             {hand.map((c, i) => {
               const playable = myTurn && canPlay(game, c);
@@ -229,11 +248,6 @@ export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameSt
             {myTurn && game.drawnCardId !== null && (
               <button className="btn btn--primary" onClick={() => room.act({ type: 'pass', seat: me.seat })}>
                 내지 않고 넘기기
-              </button>
-            )}
-            {pendingOne === me.seat && (
-              <button className="btn btn--one" onClick={() => room.act({ type: 'callOne', seat: me.seat })}>
-                📣 한 장!
               </button>
             )}
             {pendingOne !== null && pendingOne !== me.seat && (
