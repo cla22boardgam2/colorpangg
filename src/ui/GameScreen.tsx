@@ -127,20 +127,36 @@ export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameSt
   const pendingOne = game.oneCardPending;
   const iMustCall = me !== null && pendingOne === me.seat;
 
-  // [한 장!] 버튼은 나타날 때마다 네 모서리 중 한 곳에 무작위로
+  const canCatch = me !== null && pendingOne !== null && pendingOne !== me.seat;
+
+  // [한 장!]·[잡았다!] 버튼은 나타날 때마다 네 모서리 중 한 곳에 무작위로
   const [corner, setCorner] = useState<Corner>('br');
   useEffect(() => {
-    if (iMustCall) setCorner(pickCorner());
-  }, [iMustCall]);
-  const oneCallButton = (where: 'top' | 'bottom') =>
-    iMustCall && me && corner[0] === (where === 'top' ? 't' : 'b') ? (
-      <button
-        className={`btn btn--one one-call one-call--${corner}`}
-        onClick={() => room.act({ type: 'callOne', seat: me.seat })}
-      >
-        📣 한 장!
-      </button>
-    ) : null;
+    if (pendingOne !== null) setCorner(pickCorner());
+  }, [pendingOne]);
+  const oneCallButton = (where: 'top' | 'bottom') => {
+    if (!me || corner[0] !== (where === 'top' ? 't' : 'b')) return null;
+    if (iMustCall)
+      return (
+        <button
+          className={`btn btn--one one-call one-call--${corner}`}
+          onClick={() => room.act({ type: 'callOne', seat: me.seat })}
+        >
+          📣 한 장!
+        </button>
+      );
+    if (canCatch)
+      return (
+        <button
+          className={`btn btn--catch one-call one-call--${corner}`}
+          onClick={() => room.act({ type: 'catch', seat: me.seat, target: pendingOne! })}
+        >
+          🫵 잡았다!
+          <small className="one-call__name">{nameOf(pendingOne!)}</small>
+        </button>
+      );
+    return null;
+  };
 
   return (
     <div className={`game${myTurn ? ' game--myturn' : ''}${compact ? ' game--compact' : ''}`}>
@@ -248,11 +264,6 @@ export function GameScreen({ room, game, onExit }: { room: RoomApi; game: GameSt
             {myTurn && game.drawnCardId !== null && (
               <button className="btn btn--primary" onClick={() => room.act({ type: 'pass', seat: me.seat })}>
                 내지 않고 넘기기
-              </button>
-            )}
-            {pendingOne !== null && pendingOne !== me.seat && (
-              <button className="btn btn--catch" onClick={() => room.act({ type: 'catch', seat: me.seat, target: pendingOne })}>
-                🫵 잡았다! ({nameOf(pendingOne)})
               </button>
             )}
           </div>
